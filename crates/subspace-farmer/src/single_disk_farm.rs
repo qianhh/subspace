@@ -6,7 +6,7 @@ mod plotting;
 use crate::identity::{Identity, IdentityError};
 use crate::node_client::NodeClient;
 use crate::reward_signing::reward_signing;
-use crate::single_disk_farm::farming::rayon_files::RayonFiles;
+use crate::single_disk_farm::farming::rayon_files_manager::RayonFilesManger;
 pub use crate::single_disk_farm::farming::FarmingError;
 use crate::single_disk_farm::farming::{
     farming, slot_notification_forwarder, FarmingOptions, PlotAudit,
@@ -257,6 +257,8 @@ impl PlotMetadataHeader {
 pub struct SingleDiskFarmOptions<NC, PG> {
     /// Path to directory where farm is stored.
     pub directory: PathBuf,
+    /// Path to directory where plot is stored.
+    pub plot_directory: PathBuf,
     /// Information necessary for farmer application
     pub farmer_app_info: FarmerAppInfo,
     /// How much space in bytes was allocated
@@ -612,6 +614,7 @@ impl SingleDiskFarm {
     {
         let SingleDiskFarmOptions {
             directory,
+            plot_directory,
             farmer_app_info,
             allocated_space,
             max_pieces_in_sector,
@@ -630,6 +633,7 @@ impl SingleDiskFarm {
             farm_during_initial_plotting,
         } = options;
         fs::create_dir_all(&directory)?;
+        fs::create_dir_all(&plot_directory)?;
 
         let identity = Identity::open_or_create(&directory)?;
         let public_key = identity.public_key().to_bytes().into();
@@ -845,25 +849,6 @@ impl SingleDiskFarm {
             Arc::new(RwLock::new(sectors_metadata))
         };
 
-        let plot_file = Arc::new(
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .advise_random_access()
-                .open(directory.join(Self::PLOT_FILE))?,
-        );
-
-        plot_file.advise_random_access()?;
-
-        // Allocating the whole file (`set_len` below can create a sparse file, which will cause
-        // writes to fail later)
-        plot_file
-            .preallocate(sector_size as u64 * u64::from(target_sector_count))
-            .map_err(SingleDiskFarmError::CantPreallocatePlotFile)?;
-        // Truncating file (if necessary)
-        plot_file.set_len(sector_size as u64 * u64::from(target_sector_count))?;
-
         let piece_cache = DiskPieceCache::open(&directory, cache_capacity)?;
 
         let (error_sender, error_receiver) = oneshot::channel();
@@ -904,9 +889,9 @@ impl SingleDiskFarm {
             let handlers = Arc::clone(&handlers);
             let modifying_sector_index = Arc::clone(&modifying_sector_index);
             let node_client = node_client.clone();
-            let plot_file = Arc::clone(&plot_file);
             let error_sender = Arc::clone(&error_sender);
             let span = span.clone();
+            let plot_directory = plot_directory.clone();
 
             move || {
                 let _span_guard = span.enter();
@@ -962,7 +947,7 @@ impl SingleDiskFarm {
                     sector_size,
                     sector_metadata_size,
                     metadata_header,
-                    plot_file,
+                    plot_directory,
                     metadata_file,
                     sectors_metadata,
                     piece_getter: &piece_getter,
@@ -1059,6 +1044,7 @@ impl SingleDiskFarm {
             let mut stop_receiver = stop_sender.subscribe();
             let node_client = node_client.clone();
             let span = span.clone();
+            let plot_directory = plot_directory.clone();
 
             move || {
                 let _span_guard = span.enter();
@@ -1103,7 +1089,8 @@ impl SingleDiskFarm {
                             }
                         }
 
-                        let plot = RayonFiles::open(&directory.join(Self::PLOT_FILE))?;
+                        let plot =
+                            RayonFilesManger::open(plot_directory.as_path(), target_sector_count)?;
                         let plot_audit = PlotAudit::new(&plot);
 
                         let farming_options = FarmingOptions {
@@ -1156,7 +1143,7 @@ impl SingleDiskFarm {
         let (piece_reader, reading_fut) = PieceReader::new::<PosTable>(
             public_key,
             pieces_in_sector,
-            plot_file,
+            plot_directory,
             Arc::clone(&sectors_metadata),
             erasure_coding,
             modifying_sector_index,

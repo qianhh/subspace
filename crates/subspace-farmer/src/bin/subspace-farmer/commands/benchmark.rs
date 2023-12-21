@@ -3,13 +3,12 @@ use anyhow::anyhow;
 use clap::Subcommand;
 use criterion::{black_box, BatchSize, Criterion, Throughput};
 use parking_lot::Mutex;
-use std::fs::OpenOptions;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use subspace_core_primitives::crypto::kzg::{embedded_kzg_settings, Kzg};
 use subspace_core_primitives::{Record, SolutionRange};
 use subspace_erasure_coding::ErasureCoding;
-use subspace_farmer::single_disk_farm::farming::rayon_files::RayonFiles;
+use subspace_farmer::single_disk_farm::farming::rayon_files_manager::RayonFilesManger;
 use subspace_farmer::single_disk_farm::farming::{PlotAudit, PlotAuditOptions};
 use subspace_farmer::single_disk_farm::{SingleDiskFarm, SingleDiskFarmSummary};
 use subspace_farmer_components::sector::sector_size;
@@ -29,6 +28,11 @@ pub(crate) enum BenchmarkArgs {
         /// Example:
         ///   /path/to/directory
         disk_farm: PathBuf,
+        /// Disk plot to audit
+        ///
+        /// Example:
+        ///   /path/to/directory
+        disk_plot: PathBuf,
         /// Optional filter for benchmarks, must correspond to a part of benchmark name in order for benchmark to run
         filter: Option<String>,
     },
@@ -42,6 +46,11 @@ pub(crate) enum BenchmarkArgs {
         /// Example:
         ///   /path/to/directory
         disk_farm: PathBuf,
+        /// Disk plot to prove
+        ///
+        /// Example:
+        ///   /path/to/directory
+        disk_plot: PathBuf,
         /// Optional filter for benchmarks, must correspond to a part of benchmark name in order for benchmark to run
         filter: Option<String>,
         /// Limit number of sectors audited to specified number, this limits amount of memory used by benchmark (normal
@@ -56,18 +65,31 @@ pub(crate) fn benchmark(benchmark_args: BenchmarkArgs) -> anyhow::Result<()> {
         BenchmarkArgs::Audit {
             sample_size,
             disk_farm,
+            disk_plot,
             filter,
-        } => audit(sample_size, disk_farm, filter),
+        } => audit(sample_size, disk_farm, disk_plot, filter),
         BenchmarkArgs::Prove {
             sample_size,
             disk_farm,
+            disk_plot,
             filter,
             limit_sector_count,
-        } => prove(sample_size, disk_farm, filter, limit_sector_count),
+        } => prove(
+            sample_size,
+            disk_farm,
+            disk_plot,
+            filter,
+            limit_sector_count,
+        ),
     }
 }
 
-fn audit(sample_size: usize, disk_farm: PathBuf, filter: Option<String>) -> anyhow::Result<()> {
+fn audit(
+    sample_size: usize,
+    disk_farm: PathBuf,
+    disk_plot: PathBuf,
+    filter: Option<String>,
+) -> anyhow::Result<()> {
     let (single_disk_farm_info, disk_farm) = match SingleDiskFarm::collect_summary(disk_farm) {
         SingleDiskFarmSummary::Found { info, directory } => (info, directory),
         SingleDiskFarmSummary::NotFound { directory } => {
@@ -108,9 +130,7 @@ fn audit(sample_size: usize, disk_farm: PathBuf, filter: Option<String>) -> anyh
             sector_size as u64 * sectors_metadata.len() as u64,
         ));
         {
-            let plot = OpenOptions::new()
-                .read(true)
-                .open(disk_farm.join(SingleDiskFarm::PLOT_FILE))
+            let plot = RayonFilesManger::open(&disk_plot, sectors_metadata.len() as u16)
                 .map_err(|error| anyhow::anyhow!("Failed to open plot: {error}"))?;
             let plot_audit = PlotAudit::new(&plot);
 
@@ -143,7 +163,7 @@ fn audit(sample_size: usize, disk_farm: PathBuf, filter: Option<String>) -> anyh
             });
         }
         {
-            let plot = RayonFiles::open(&disk_farm.join(SingleDiskFarm::PLOT_FILE))
+            let plot = RayonFilesManger::open(&disk_plot, sectors_metadata.len() as u16)
                 .map_err(|error| anyhow::anyhow!("Failed to open plot: {error}"))?;
             let plot_audit = PlotAudit::new(&plot);
 
@@ -185,6 +205,7 @@ fn audit(sample_size: usize, disk_farm: PathBuf, filter: Option<String>) -> anyh
 fn prove(
     sample_size: usize,
     disk_farm: PathBuf,
+    disk_plot: PathBuf,
     filter: Option<String>,
     limit_sector_count: Option<usize>,
 ) -> anyhow::Result<()> {
@@ -227,9 +248,7 @@ fn prove(
     {
         let mut group = criterion.benchmark_group("prove");
         {
-            let plot = OpenOptions::new()
-                .read(true)
-                .open(disk_farm.join(SingleDiskFarm::PLOT_FILE))
+            let plot = RayonFilesManger::open(&disk_plot, sectors_metadata.len() as u16)
                 .map_err(|error| anyhow::anyhow!("Failed to open plot: {error}"))?;
             let plot_audit = PlotAudit::new(&plot);
             let options = PlotAuditOptions::<PosTable> {
@@ -273,7 +292,7 @@ fn prove(
             });
         }
         {
-            let plot = RayonFiles::open(&disk_farm.join(SingleDiskFarm::PLOT_FILE))
+            let plot = RayonFilesManger::open(&disk_plot, sectors_metadata.len() as u16)
                 .map_err(|error| anyhow::anyhow!("Failed to open plot: {error}"))?;
             let plot_audit = PlotAudit::new(&plot);
             let options = PlotAuditOptions::<PosTable> {

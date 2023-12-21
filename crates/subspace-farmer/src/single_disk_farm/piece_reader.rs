@@ -1,12 +1,13 @@
 use async_lock::RwLock;
 use futures::channel::{mpsc, oneshot};
 use futures::{SinkExt, StreamExt};
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use subspace_core_primitives::{Piece, PieceOffset, PublicKey, SectorId, SectorIndex};
 use subspace_erasure_coding::ErasureCoding;
-use subspace_farmer_components::sector::{sector_size, SectorMetadataChecksummed};
+use subspace_farmer_components::sector::SectorMetadataChecksummed;
 use subspace_farmer_components::{reading, ReadAt, ReadAtAsync, ReadAtSync};
 use subspace_proof_of_space::Table;
 use tracing::{error, warn};
@@ -32,7 +33,7 @@ impl PieceReader {
     pub(super) fn new<PosTable>(
         public_key: PublicKey,
         pieces_in_sector: u16,
-        plot_file: Arc<File>,
+        plot_directory: PathBuf,
         sectors_metadata: Arc<RwLock<Vec<SectorMetadataChecksummed>>>,
         erasure_coding: ErasureCoding,
         modifying_sector_index: Arc<RwLock<Option<SectorIndex>>>,
@@ -45,7 +46,7 @@ impl PieceReader {
         let reading_fut = read_pieces::<PosTable>(
             public_key,
             pieces_in_sector,
-            plot_file,
+            plot_directory,
             sectors_metadata,
             erasure_coding,
             modifying_sector_index,
@@ -83,7 +84,7 @@ impl PieceReader {
 async fn read_pieces<PosTable>(
     public_key: PublicKey,
     pieces_in_sector: u16,
-    plot_file: Arc<File>,
+    plot_directory: PathBuf,
     sectors_metadata: Arc<RwLock<Vec<SectorMetadataChecksummed>>>,
     erasure_coding: ErasureCoding,
     modifying_sector_index: Arc<RwLock<Option<SectorIndex>>>,
@@ -156,8 +157,22 @@ async fn read_pieces<PosTable>(
             continue;
         }
 
-        let sector_size = sector_size(pieces_in_sector);
-        let sector = plot_file.offset(sector_index as usize * sector_size);
+        let sector_file = match OpenOptions::new().read(true).open(format!(
+            "{}/{:?}",
+            plot_directory.display(),
+            sector_index
+        )) {
+            Ok(file) => file,
+            Err(err) => {
+                error!(
+                    %sector_index,
+                    %err,
+                    "Failed to open sector file"
+                );
+                continue;
+            }
+        };
+        let sector = sector_file.offset(0);
 
         let maybe_piece = read_piece::<PosTable, _, _>(
             &public_key,

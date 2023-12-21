@@ -89,6 +89,48 @@ impl ReadAtSync for ! {
     }
 }
 
+/// Sync version of [`ReadAtSectorIndex`], it is both [`Send`] and [`Sync`] and is supposed to be used with a
+/// thread pool
+pub trait ReadAtSectorIndexSync: Send + Sync {
+    fn sector(&self, index: u16) -> ReadAtSectorIndex<'_, Self>
+    where
+        Self: Sized,
+    {
+        ReadAtSectorIndex { inner: self, index }
+    }
+
+    /// Fill the buffer by reading bytes at a specific offset
+    fn read_at_sector_index(
+        &self,
+        buf: &mut [u8],
+        sector_index: u16,
+        offset: usize,
+    ) -> io::Result<()>;
+}
+
+impl ReadAtSectorIndexSync for ! {
+    fn read_at_sector_index(
+        &self,
+        _buf: &mut [u8],
+        _sector_index: u16,
+        _offset: usize,
+    ) -> io::Result<()> {
+        unreachable!("Is never called")
+    }
+}
+
+/// Sync version of [`WriteSector`], it is both [`Send`] and [`Sync`] and is supposed to be used with a
+/// thread pool
+pub trait WriteSectorSync: Send + Sync {
+    fn write(&self, sector_index: u16, buf: &[u8]) -> io::Result<()>;
+}
+
+impl WriteSectorSync for ! {
+    fn write(&self, _sector_index: u16, _buf: &[u8]) -> io::Result<()> {
+        unreachable!("Is never called")
+    }
+}
+
 /// Container or asynchronously reading bytes using in [`ReadAtAsync`]
 #[repr(transparent)]
 pub struct AsyncReadBytes<B>(B)
@@ -259,6 +301,31 @@ where
         B: AsMut<[u8]> + Unpin + 'static,
     {
         self.inner.read_at(buf, offset + self.offset).await
+    }
+}
+
+/// Reader with fixed sector index added to all attempted reads
+#[derive(Debug, Copy, Clone)]
+pub struct ReadAtSectorIndex<'a, T> {
+    inner: &'a T,
+    index: u16,
+}
+
+impl<T> ReadAtSync for ReadAtSectorIndex<'_, T>
+where
+    T: ReadAtSectorIndexSync,
+{
+    fn read_at(&self, buf: &mut [u8], offset: usize) -> io::Result<()> {
+        self.inner.read_at_sector_index(buf, self.index, offset)
+    }
+}
+
+impl<T> ReadAtSync for &ReadAtSectorIndex<'_, T>
+where
+    T: ReadAtSectorIndexSync,
+{
+    fn read_at(&self, buf: &mut [u8], offset: usize) -> io::Result<()> {
+        self.inner.read_at_sector_index(buf, self.index, offset)
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::proving::SolutionCandidates;
 use crate::sector::{sector_size, SectorContentsMap, SectorMetadataChecksummed};
-use crate::{ReadAtOffset, ReadAtSync};
+use crate::{ReadAtOffset, ReadAtSectorIndex, ReadAtSectorIndexSync, ReadAtSync};
 use rayon::prelude::*;
 use subspace_core_primitives::crypto::Scalar;
 use subspace_core_primitives::{
@@ -128,6 +128,83 @@ where
                 usize::from(sector_metadata.sector_index)
                     * sector_size(sector_metadata.pieces_in_sector),
             );
+
+            let mut s_bucket = vec![0; sector_auditing_info.s_bucket_audit_size];
+
+            if let Err(error) = sector.read_at(
+                &mut s_bucket,
+                sector_auditing_info.s_bucket_audit_offset_in_sector,
+            ) {
+                warn!(
+                    %error,
+                    sector_index = %sector_metadata.sector_index,
+                    s_bucket_audit_index = %sector_auditing_info.s_bucket_audit_index,
+                    "Failed read s-bucket",
+                );
+
+                return None;
+            }
+
+            let (winning_chunks, best_solution_distance) = map_winning_chunks(
+                &s_bucket,
+                global_challenge,
+                &sector_auditing_info.sector_slot_challenge,
+                solution_range,
+            )?;
+
+            Some(AuditResult {
+                sector_index: sector_metadata.sector_index,
+                solution_candidates: SolutionCandidates::new(
+                    public_key,
+                    sector_auditing_info.sector_id,
+                    sector_auditing_info.s_bucket_audit_index,
+                    sector,
+                    sector_metadata,
+                    winning_chunks.into(),
+                ),
+                best_solution_distance,
+            })
+        })
+        .collect()
+}
+
+/// Audit the whole plot and generate streams of solutions
+pub fn audit_plot_sync_v2<'a, Plot>(
+    public_key: &'a PublicKey,
+    global_challenge: &Blake3Hash,
+    solution_range: SolutionRange,
+    plot: &'a Plot,
+    sectors_metadata: &'a [SectorMetadataChecksummed],
+    maybe_sector_being_modified: Option<SectorIndex>,
+) -> Vec<AuditResult<'a, ReadAtSectorIndex<'a, Plot>>>
+where
+    Plot: ReadAtSectorIndexSync + 'a,
+{
+    let public_key_hash = public_key.hash();
+
+    // Create auditing info for all sectors in parallel
+    sectors_metadata
+        .par_iter()
+        .map(|sector_metadata| {
+            (
+                collect_sector_auditing_details(public_key_hash, global_challenge, sector_metadata),
+                sector_metadata,
+            )
+        })
+        // Read s-buckets of all sectors, map to winning chunks and then to audit results, all in
+        // parallel
+        .filter_map(|(sector_auditing_info, sector_metadata)| {
+            if maybe_sector_being_modified == Some(sector_metadata.sector_index) {
+                // Skip sector that is being modified right now
+                return None;
+            }
+
+            if sector_auditing_info.s_bucket_audit_size == 0 {
+                // S-bucket is empty
+                return None;
+            }
+
+            let sector = plot.sector(sector_metadata.sector_index);
 
             let mut s_bucket = vec![0; sector_auditing_info.s_bucket_audit_size];
 

@@ -1,4 +1,4 @@
-pub mod rayon_files;
+pub mod rayon_files_manager;
 
 use crate::node_client;
 use crate::node_client::NodeClient;
@@ -14,10 +14,10 @@ use std::time::Instant;
 use subspace_core_primitives::crypto::kzg::Kzg;
 use subspace_core_primitives::{PosSeed, PublicKey, SectorIndex, Solution, SolutionRange};
 use subspace_erasure_coding::ErasureCoding;
-use subspace_farmer_components::auditing::audit_plot_sync;
+use subspace_farmer_components::auditing::audit_plot_sync_v2;
 use subspace_farmer_components::proving::{ProvableSolutions, ProvingError};
 use subspace_farmer_components::sector::SectorMetadataChecksummed;
-use subspace_farmer_components::{proving, ReadAtSync};
+use subspace_farmer_components::{proving, ReadAtSectorIndexSync};
 use subspace_proof_of_space::{Table, TableGenerator};
 use subspace_rpc_primitives::{SlotInfo, SolutionResponse};
 use thiserror::Error;
@@ -117,11 +117,11 @@ impl<'a, PosTable> Copy for PlotAuditOptions<'a, PosTable> where PosTable: Table
 /// Plot auditing implementation
 pub struct PlotAudit<Plot>(Plot)
 where
-    Plot: ReadAtSync;
+    Plot: ReadAtSectorIndexSync;
 
 impl<'a, Plot> PlotAudit<Plot>
 where
-    Plot: ReadAtSync + 'a,
+    Plot: ReadAtSectorIndexSync + 'a,
 {
     /// Create new instance
     pub fn new(plot: Plot) -> Self {
@@ -149,7 +149,7 @@ where
             table_generator,
         } = options;
 
-        let audit_results = audit_plot_sync(
+        let audit_results = audit_plot_sync_v2(
             public_key,
             &slot_info.global_challenge,
             slot_info.voting_solution_range,
@@ -216,7 +216,7 @@ pub(super) async fn farming<'a, PosTable, NC, Plot>(
 where
     PosTable: Table,
     NC: NodeClient,
-    Plot: ReadAtSync + 'a,
+    Plot: ReadAtSectorIndexSync + 'a,
 {
     let FarmingOptions {
         public_key,

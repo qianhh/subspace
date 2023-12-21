@@ -206,6 +206,8 @@ struct DsnArgs {
 pub(crate) struct DiskFarm {
     /// Path to directory where data is stored.
     directory: PathBuf,
+    /// plot directory
+    plot_directory: PathBuf,
     /// How much space in bytes can farm use for plots (metadata space is not included)
     allocated_plotting_space: u64,
 }
@@ -215,11 +217,12 @@ impl FromStr for DiskFarm {
 
     fn from_str(s: &str) -> anyhow::Result<Self, Self::Err> {
         let parts = s.split(',').collect::<Vec<_>>();
-        if parts.len() != 2 {
-            return Err("Must contain 2 coma-separated components".to_string());
+        if parts.len() != 3 {
+            return Err("Must contain 3 coma-separated components".to_string());
         }
 
         let mut plot_directory = None;
+        let mut plot_data_directory = None;
         let mut allocated_plotting_space = None;
 
         for part in parts {
@@ -236,6 +239,13 @@ impl FromStr for DiskFarm {
                     plot_directory.replace(
                         PathBuf::try_from(value).map_err(|error| {
                             format!("Failed to parse `path` \"{value}\": {error}")
+                        })?,
+                    );
+                }
+                "plot" => {
+                    plot_data_directory.replace(
+                        PathBuf::try_from(value).map_err(|error| {
+                            format!("Failed to parse `plot` \"{value}\": {error}")
                         })?,
                     );
                 }
@@ -260,6 +270,9 @@ impl FromStr for DiskFarm {
         Ok(DiskFarm {
             directory: plot_directory.ok_or({
                 "`path` key is required with path to directory where plots will be stored"
+            })?,
+            plot_directory: plot_data_directory.ok_or({
+                "`plot` key is required with path to directory where plots will be stored"
             })?,
             allocated_plotting_space: allocated_plotting_space.ok_or({
                 "`size` key is required with path to directory where plots will be stored"
@@ -304,6 +317,7 @@ where
 
         disk_farms = vec![DiskFarm {
             directory: tmp_directory.as_ref().to_path_buf(),
+            plot_directory: tmp_directory.as_ref().to_path_buf().join("plots"),
             allocated_plotting_space: plot_size.as_u64(),
         }];
 
@@ -451,6 +465,7 @@ where
         let single_disk_farm_fut = SingleDiskFarm::new::<_, _, PosTable>(
             SingleDiskFarmOptions {
                 directory: disk_farm.directory.clone(),
+                plot_directory: disk_farm.plot_directory.clone(),
                 farmer_app_info: farmer_app_info.clone(),
                 allocated_space: disk_farm.allocated_plotting_space,
                 max_pieces_in_sector,

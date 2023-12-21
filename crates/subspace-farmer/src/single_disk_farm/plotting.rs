@@ -13,13 +13,14 @@ use parity_scale_codec::Encode;
 use rayon::{ThreadPool, ThreadPoolBuildError};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io;
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{fs, io};
 use subspace_core_primitives::crypto::kzg::Kzg;
 use subspace_core_primitives::{
     Blake3Hash, HistorySize, PieceOffset, PublicKey, SectorId, SectorIndex, SegmentHeader,
@@ -106,7 +107,7 @@ pub(super) struct PlottingOptions<'a, NC, PG> {
     pub(super) sector_size: usize,
     pub(super) sector_metadata_size: usize,
     pub(super) metadata_header: PlotMetadataHeader,
-    pub(super) plot_file: Arc<File>,
+    pub(super) plot_directory: PathBuf,
     pub(super) metadata_file: File,
     pub(super) sectors_metadata: Arc<RwLock<Vec<SectorMetadataChecksummed>>>,
     pub(super) piece_getter: &'a PG,
@@ -145,7 +146,7 @@ where
         sector_size,
         sector_metadata_size,
         mut metadata_header,
-        plot_file,
+        plot_directory,
         metadata_file,
         sectors_metadata,
         piece_getter,
@@ -333,7 +334,12 @@ where
             plotting_result?
         };
 
-        plot_file.write_all_at(&sector, (sector_index as usize * sector_size) as u64)?;
+        fs::write(
+            format!("{}/{:?}", plot_directory.display(), sector_index),
+            sector,
+        )?;
+        trace!(%sector_index, %sector_size, "Successful write to sector file");
+
         metadata_file.write_all_at(
             &sector_metadata,
             RESERVED_PLOT_METADATA + (u64::from(sector_index) * sector_metadata_size as u64),
