@@ -50,8 +50,10 @@ use sp_objects::ObjectsApi;
 use sp_runtime::traits::Block as BlockT;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fs;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -128,6 +130,15 @@ pub trait SubspaceRpcApi {
     #[method(name = "subspace_piece", blocking)]
     fn piece(&self, piece_index: PieceIndex) -> RpcResult<Option<Vec<u8>>>;
 
+    #[method(name = "subspace_fetch_piece")]
+    async fn fetch_piece(&self, piece_index: PieceIndex) -> RpcResult<Option<Vec<u8>>>;
+
+    #[method(name = "subspace_save_piece")]
+    async fn save_piece(&self, piece_index: PieceIndex, piece: Vec<u8>) -> RpcResult<()>;
+
+    #[method(name = "subspace_piece_exists")]
+    async fn piece_exists(&self, piece_index: PieceIndex) -> RpcResult<bool>;
+
     #[method(name = "subspace_acknowledgeArchivedSegmentHeader")]
     async fn acknowledge_archived_segment_header(
         &self,
@@ -197,6 +208,8 @@ where
     pub deny_unsafe: DenyUnsafe,
     /// Kzg instance
     pub kzg: Kzg,
+    /// piece cache path
+    pub piece_cache: PathBuf,
 }
 
 /// Implements the [`SubspaceRpcApiServer`] trait for interacting with Subspace.
@@ -225,6 +238,7 @@ where
     kzg: Kzg,
     deny_unsafe: DenyUnsafe,
     _block: PhantomData<Block>,
+    piece_cache_path: PathBuf,
 }
 
 /// [`SubspaceRpc`] is used for notifying subscribers about arrival of new slots and for
@@ -273,6 +287,7 @@ where
             kzg: config.kzg,
             deny_unsafe: config.deny_unsafe,
             _block: PhantomData,
+            piece_cache_path: config.piece_cache,
         })
     }
 }
@@ -779,6 +794,42 @@ where
         }
 
         Ok(None)
+    }
+
+    async fn fetch_piece(&self, piece_index: PieceIndex) -> RpcResult<Option<Vec<u8>>> {
+        match self.piece_exists(piece_index).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok(None);
+            }
+            Err(error) => {
+                error!("Failed to call piece_exists: {}", error);
+            }
+        }
+        let file_contents: Vec<u8> = fs::read(format!(
+            "{}/{:?}",
+            self.piece_cache_path.display(),
+            piece_index
+        ))?;
+        Ok(Some(file_contents))
+    }
+
+    async fn save_piece(&self, piece_index: PieceIndex, piece: Vec<u8>) -> RpcResult<()> {
+        fs::write(
+            format!("{}/{:?}", self.piece_cache_path.display(), piece_index),
+            piece,
+        )?;
+        Ok(())
+    }
+
+    async fn piece_exists(&self, piece_index: PieceIndex) -> RpcResult<bool> {
+        let path = PathBuf::from(format!(
+            "{}/{:?}",
+            self.piece_cache_path.display(),
+            piece_index
+        ));
+        let file_path: &Path = path.as_ref();
+        Ok(file_path.exists())
     }
 
     async fn segment_headers(

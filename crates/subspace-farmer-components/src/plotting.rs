@@ -35,7 +35,7 @@ const RECONSTRUCTION_CONCURRENCY_LIMIT: usize = 1;
 fn default_backoff() -> ExponentialBackoff {
     ExponentialBackoff {
         initial_interval: Duration::from_secs(15),
-        max_interval: Duration::from_secs(10 * 60),
+        max_interval: Duration::from_secs(60),
         // Try until we get a valid piece
         max_elapsed_time: None,
         ..ExponentialBackoff::default()

@@ -60,6 +60,15 @@ pub trait NodeClient: Clone + fmt::Debug + Send + Sync + 'static {
     /// Get piece by index.
     async fn piece(&self, piece_index: PieceIndex) -> Result<Option<Piece>, Error>;
 
+    /// Get piece from local cache by index.
+    async fn fetch_piece(&self, piece_index: PieceIndex) -> Result<Option<Piece>, Error>;
+
+    /// Save piece to local cache.
+    async fn save_piece(&self, piece_index: PieceIndex, piece: Vec<u8>) -> Result<(), Error>;
+
+    /// Is exist piece in local cache
+    async fn piece_exists(&self, piece_index: PieceIndex) -> Result<bool, Error>;
+
     /// Acknowledge segment header.
     async fn acknowledge_archived_segment_header(
         &self,

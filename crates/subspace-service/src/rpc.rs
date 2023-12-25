@@ -40,6 +40,7 @@ use sp_blockchain::{Error as BlockChainError, HeaderBackend, HeaderMetadata};
 use sp_consensus::SyncOracle;
 use sp_consensus_subspace::{FarmerPublicKey, SubspaceApi};
 use sp_objects::ObjectsApi;
+use std::path::PathBuf;
 use std::sync::Arc;
 use subspace_core_primitives::crypto::kzg::Kzg;
 use subspace_networking::libp2p::Multiaddr;
@@ -78,6 +79,8 @@ where
     pub sync_oracle: SubspaceSyncOracle<SO>,
     /// Kzg instance.
     pub kzg: Kzg,
+    /// piece cache path
+    pub piece_cache: PathBuf,
 }
 
 /// Instantiate all full RPC extensions.
@@ -115,6 +118,7 @@ where
         segment_headers_store,
         sync_oracle,
         kzg,
+        piece_cache,
     } = deps;
 
     let chain_name = chain_spec.name().to_string();
@@ -137,6 +141,7 @@ where
             sync_oracle,
             kzg,
             deny_unsafe,
+            piece_cache,
         })?
         .into_rpc(),
     )?;

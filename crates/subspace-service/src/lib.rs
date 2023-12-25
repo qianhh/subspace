@@ -34,6 +34,7 @@ use crate::dsn::{create_dsn_instance, DsnConfigurationError};
 use crate::metrics::NodeMetrics;
 use crate::transaction_pool::FullPool;
 use core::sync::atomic::{AtomicU32, Ordering};
+use std::fs;
 use cross_domain_message_gossip::cdm_gossip_peers_set_config;
 use domain_runtime_primitives::opaque::{Block as DomainBlock, Header as DomainHeader};
 pub use dsn::DsnConfig;
@@ -99,6 +100,7 @@ use static_assertions::const_assert;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_core_primitives::crypto::kzg::{embedded_kzg_settings, Kzg};
@@ -241,6 +243,8 @@ pub struct SubspaceConfiguration {
     pub is_timekeeper: bool,
     /// CPU cores that timekeeper can use
     pub timekeeper_cpu_cores: HashSet<usize>,
+    /// Piece cache path
+    pub piece_cache_path: PathBuf,
 }
 
 struct SubspaceExtensionsFactory<PosTable, Client, DomainBlock, ExecutorDispatch> {
@@ -1055,6 +1059,8 @@ where
         );
     };
 
+    fs::create_dir_all(&config.piece_cache_path)?;
+    
     let rpc_handlers = sc_service::spawn_tasks(SpawnTasksParams {
         network: network_service.clone(),
         client: client.clone(),
@@ -1068,6 +1074,7 @@ where
             let archived_segment_notification_stream = archived_segment_notification_stream.clone();
             let transaction_pool = transaction_pool.clone();
             let chain_spec = config.base.chain_spec.cloned_box();
+            let piece_cache_path = config.piece_cache_path.clone();
 
             Box::new(move |deny_unsafe, subscription_executor| {
                 let deps = rpc::FullDeps {
@@ -1084,6 +1091,7 @@ where
                     segment_headers_store: segment_headers_store.clone(),
                     sync_oracle: sync_oracle.clone(),
                     kzg: subspace_link.kzg().clone(),
+                    piece_cache: piece_cache_path.clone(),
                 };
 
                 rpc::create_full(deps).map_err(Into::into)

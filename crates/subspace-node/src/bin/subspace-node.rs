@@ -533,6 +533,7 @@ fn main() -> Result<(), Error> {
                         // Timekeeper is enabled if `--dev` is used
                         is_timekeeper: cli.timekeeper || cli.run.shared_params.dev,
                         timekeeper_cpu_cores: cli.timekeeper_cpu_cores,
+                        piece_cache_path: cli.piece_cache_path,
                     };
 
                     let partial_components =

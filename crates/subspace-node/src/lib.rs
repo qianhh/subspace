@@ -29,6 +29,7 @@ use sc_telemetry::serde_json;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::Write;
+use std::path::PathBuf;
 use std::{fs, io};
 use subspace_networking::libp2p::Multiaddr;
 
@@ -287,6 +288,10 @@ pub struct Cli {
     /// External entropy, used initially when PoT chain starts to derive the first seed
     #[arg(long, value_parser = parse_pot_external_entropy)]
     pub pot_external_entropy: Option<Vec<u8>>,
+
+    /// Specify piece cache path
+    #[arg(long)]
+    pub piece_cache_path: PathBuf,
 }
 
 impl SubstrateCli for Cli {
