@@ -48,7 +48,7 @@ impl DiskPieceCacheV2 {
         PieceIndex::SIZE + Piece::SIZE + mem::size_of::<Blake3Hash>()
     }
 
-    /// Store piece in cache at specified offset, replacing existing piece if there is any
+    /// Store piece in cache at specified index, replacing existing piece if there is any
     ///
     /// NOTE: it is possible to do concurrent reads and writes, higher level logic must ensure this
     /// doesn't happen for the same piece being accessed!
@@ -77,9 +77,9 @@ impl DiskPieceCacheV2 {
         Ok(())
     }
 
-    /// Read piece from cache at specified offset.
+    /// Read piece from cache at specified index.
     ///
-    /// Returns `None` if offset is out of range.
+    /// Returns `None` if piece cann't be read.
     ///
     /// NOTE: it is possible to do concurrent reads and writes, higher level logic must ensure this
     /// doesn't happen for the same piece being accessed!
