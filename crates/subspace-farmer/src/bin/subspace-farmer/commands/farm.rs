@@ -152,6 +152,10 @@ pub(crate) struct FarmingArgs {
     /// `--sector-encoding-concurrency` options.
     #[arg(long, default_value_t = available_parallelism() / 2)]
     replotting_thread_pool_size: usize,
+
+    /// Specify l2 piece cache directory
+    #[arg(long)]
+    l2_cache_path: PathBuf,
 }
 
 fn cache_percentage_parser(s: &str) -> anyhow::Result<NonZeroU8> {
@@ -295,6 +299,7 @@ where
         farming_thread_pool_size,
         plotting_thread_pool_size,
         replotting_thread_pool_size,
+        l2_cache_path,
     } = farming_args;
 
     // Override flags with `--dev`
@@ -467,6 +472,7 @@ where
                 plotting_thread_pool_size,
                 replotting_thread_pool_size,
                 plotting_delay: Some(plotting_delay_receiver),
+                l2_cache_path: l2_cache_path.clone(),
             },
             disk_farm_index,
         );

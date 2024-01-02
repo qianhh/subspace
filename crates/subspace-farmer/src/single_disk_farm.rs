@@ -297,6 +297,8 @@ pub struct SingleDiskFarmOptions<NC, PG> {
     /// Notification for plotter to start, can be used to delay plotting until some initialization
     /// has happened externally
     pub plotting_delay: Option<oneshot::Receiver<()>>,
+    /// Path to l2 piece cache directory.
+    pub l2_cache_path: PathBuf,
 }
 
 /// Errors happening when trying to create/open single disk farm
@@ -631,6 +633,7 @@ impl SingleDiskFarm {
             replotting_thread_pool_size,
             plotting_delay,
             farm_during_initial_plotting,
+            l2_cache_path,
         } = options;
         fs::create_dir_all(&directory)?;
 
@@ -867,7 +870,7 @@ impl SingleDiskFarm {
         // Truncating file (if necessary)
         plot_file.set_len(sector_size as u64 * u64::from(target_sector_count))?;
 
-        let piece_cache = DiskPieceCache::open(&directory, cache_capacity)?;
+        let piece_cache = DiskPieceCache::open(&directory, cache_capacity, &l2_cache_path)?;
 
         let (error_sender, error_receiver) = oneshot::channel();
         let error_sender = Arc::new(Mutex::new(Some(error_sender)));

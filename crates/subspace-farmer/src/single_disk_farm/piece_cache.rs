@@ -3,7 +3,7 @@ mod tests;
 
 use derive_more::Display;
 use std::fs::{File, OpenOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{fs, io, mem};
 use subspace_core_primitives::crypto::blake3_hash_list;
@@ -52,24 +52,34 @@ struct Inner {
 #[derive(Debug, Clone)]
 pub struct DiskPieceCache {
     inner: Arc<Inner>,
+    l2_cache_path: PathBuf,
 }
 
 impl DiskPieceCache {
     pub(super) const FILE_NAME: &'static str = "piece_cache.bin";
 
     #[cfg(not(test))]
-    pub(super) fn open(directory: &Path, capacity: usize) -> Result<Self, DiskPieceCacheError> {
-        Self::open_internal(directory, capacity)
+    pub(super) fn open(
+        directory: &Path,
+        capacity: usize,
+        l2_cache_path: &Path,
+    ) -> Result<Self, DiskPieceCacheError> {
+        Self::open_internal(directory, capacity, l2_cache_path)
     }
 
     #[cfg(test)]
-    pub(crate) fn open(directory: &Path, capacity: usize) -> Result<Self, DiskPieceCacheError> {
-        Self::open_internal(directory, capacity)
+    pub(crate) fn open(
+        directory: &Path,
+        capacity: usize,
+        l2_cache_path: &Path,
+    ) -> Result<Self, DiskPieceCacheError> {
+        Self::open_internal(directory, capacity, l2_cache_path)
     }
 
     pub(super) fn open_internal(
         directory: &Path,
         capacity: usize,
+        l2_cache_path: &Path,
     ) -> Result<Self, DiskPieceCacheError> {
         if capacity == 0 {
             return Err(DiskPieceCacheError::ZeroCapacity);
@@ -97,6 +107,7 @@ impl DiskPieceCache {
                 file,
                 num_elements: expected_size / Self::element_size(),
             }),
+            l2_cache_path: l2_cache_path.to_path_buf(),
         })
     }
 
@@ -249,5 +260,37 @@ impl DiskPieceCache {
         }
         info!("Deleting piece cache file at {}", piece_cache.display());
         fs::remove_file(piece_cache)
+    }
+
+    /// Read piece from cache at specified index.
+    ///
+    /// Returns `None` if piece cann't be read.
+    ///
+    /// NOTE: it is possible to do concurrent reads and writes, higher level logic must ensure this
+    /// doesn't happen for the same piece being accessed!
+    pub(crate) fn read_piece_l2(
+        &self,
+        piece_index: PieceIndex,
+    ) -> Result<Option<Piece>, DiskPieceCacheError> {
+        let path = self.l2_cache_path.join(format!("{:?}", piece_index));
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .advise_random_access()
+            .open(path)?;
+
+        file.advise_random_access()?;
+
+        let mut element = vec![0; Self::element_size()];
+        if Self::read_piece_internal(&file, 0, &mut element)?.is_some() {
+            let mut piece = Piece::default();
+            piece.copy_from_slice(&element[PieceIndex::SIZE..][..Piece::SIZE]);
+            Ok(Some(piece))
+        } else {
+            Ok(None)
+        }
     }
 }

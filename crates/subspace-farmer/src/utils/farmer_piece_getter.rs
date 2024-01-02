@@ -67,6 +67,11 @@ where
             return Ok(Some(piece));
         }
 
+        if let Some(piece) = self.piece_cache.get_piece_l2(piece_index).await {
+            trace!(%piece_index, "Got piece from local l2 cache successfully");
+            return Ok(Some(piece));
+        }
+
         // L2 piece acquisition
         trace!(%piece_index, "Getting piece from DSN L2 cache");
         let maybe_piece = self
