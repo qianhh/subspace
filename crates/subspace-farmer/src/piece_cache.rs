@@ -575,9 +575,7 @@ impl PieceCache {
             move || {
                 let cache = cache.read();
                 match cache.backend.read_piece(piece_index) {
-                    Ok(maybe_piece) => {
-                        return maybe_piece;
-                    }
+                    Ok(maybe_piece) => maybe_piece,
                     Err(error) => {
                         error!(
                             %error,
@@ -585,7 +583,7 @@ impl PieceCache {
                             "Error while reading piece from cache, might be a disk corruption"
                         );
 
-                        return None;
+                        None
                     }
                 }
             }
