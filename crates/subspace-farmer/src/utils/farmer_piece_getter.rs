@@ -8,9 +8,7 @@ use std::error::Error;
 use std::sync::Arc;
 use subspace_core_primitives::{Piece, PieceIndex};
 use subspace_farmer_components::plotting::{PieceGetter, PieceGetterRetryPolicy};
-use subspace_networking::libp2p::kad::RecordKey;
 use subspace_networking::libp2p::PeerId;
-use subspace_networking::utils::multihash::ToMultihash;
 use subspace_networking::utils::piece_provider::{PieceProvider, PieceValidator, RetryPolicy};
 use subspace_networking::Node;
 use tracing::{debug, error, trace};
@@ -59,10 +57,8 @@ where
         piece_index: PieceIndex,
         retry_policy: PieceGetterRetryPolicy,
     ) -> Result<Option<Piece>, Box<dyn Error + Send + Sync + 'static>> {
-        let key = RecordKey::from(piece_index.to_multihash());
-
         trace!(%piece_index, "Getting piece from local cache");
-        if let Some(piece) = self.piece_cache.get_piece(key).await {
+        if let Some(piece) = self.piece_cache.get_piece(piece_index).await {
             trace!(%piece_index, "Got piece from local cache successfully");
             return Ok(Some(piece));
         }

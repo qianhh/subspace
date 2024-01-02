@@ -5,9 +5,7 @@ use crate::utils::shutdown_signal;
 use anyhow::anyhow;
 use bytesize::ByteSize;
 use clap::{Parser, ValueHint};
-use futures::channel::oneshot;
-use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use lru::LruCache;
 use parking_lot::Mutex;
 use std::fs;
@@ -18,27 +16,21 @@ use std::pin::pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use subspace_core_primitives::crypto::kzg::{embedded_kzg_settings, Kzg};
-use subspace_core_primitives::{PublicKey, Record, SectorIndex};
-use subspace_erasure_coding::ErasureCoding;
+use subspace_core_primitives::PublicKey;
 use subspace_farmer::piece_cache::PieceCache;
-use subspace_farmer::single_disk_farm::{
-    SingleDiskFarm, SingleDiskFarmError, SingleDiskFarmOptions,
-};
+use subspace_farmer::single_disk_farm::piece_cache_v2::DiskPieceCacheV2;
 use subspace_farmer::utils::farmer_piece_getter::FarmerPieceGetter;
 use subspace_farmer::utils::piece_validator::SegmentCommitmentPieceValidator;
-use subspace_farmer::utils::readers_and_pieces::ReadersAndPieces;
 use subspace_farmer::utils::ss58::parse_ss58_reward_address;
 use subspace_farmer::utils::{run_future_in_dedicated_thread, AsyncJoinOnDrop};
 use subspace_farmer::{Identity, NodeClient, NodeRpcClient};
-use subspace_farmer_components::plotting::PlottedSector;
 use subspace_metrics::{start_prometheus_metrics_server, RegistryAdapter};
 use subspace_networking::libp2p::identity::{ed25519, Keypair};
 use subspace_networking::libp2p::Multiaddr;
 use subspace_networking::utils::piece_provider::PieceProvider;
 use subspace_proof_of_space::Table;
 use tempfile::TempDir;
-use tokio::sync::Semaphore;
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{error, info, info_span, warn};
 use zeroize::Zeroizing;
 
 const RECORDS_ROOTS_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(1_000_000).expect("Not zero; qed");
@@ -383,11 +375,6 @@ where
     };
 
     let kzg = Kzg::new(embedded_kzg_settings());
-    let erasure_coding = ErasureCoding::new(
-        NonZeroUsize::new(Record::NUM_S_BUCKETS.next_power_of_two().ilog2() as usize)
-            .expect("Not zero; qed"),
-    )
-    .map_err(|error| anyhow::anyhow!(error))?;
     // TODO: Consider introducing and using global in-memory segment header cache (this comment is
     //  in multiple files)
     let segment_commitments_cache = Mutex::new(LruCache::new(RECORDS_ROOTS_CACHE_SIZE));
@@ -418,215 +405,20 @@ where
         "cache-worker".to_string(),
     );
 
-    let mut single_disk_farms = Vec::with_capacity(disk_farms.len());
-    let max_pieces_in_sector = match max_pieces_in_sector {
-        Some(max_pieces_in_sector) => {
-            if max_pieces_in_sector > farmer_app_info.protocol_info.max_pieces_in_sector {
-                warn!(
-                    protocol_value = farmer_app_info.protocol_info.max_pieces_in_sector,
-                    desired_value = max_pieces_in_sector,
-                    "Can't set max pieces in sector higher than protocol value, using protocol \
-                    value"
-                );
-
-                farmer_app_info.protocol_info.max_pieces_in_sector
-            } else {
-                max_pieces_in_sector
-            }
-        }
-        None => farmer_app_info.protocol_info.max_pieces_in_sector,
-    };
-
-    let downloading_semaphore = Arc::new(Semaphore::new(sector_downloading_concurrency.get()));
-    let encoding_semaphore = Arc::new(Semaphore::new(sector_encoding_concurrency.get()));
-
-    let mut plotting_delay_senders = Vec::with_capacity(disk_farms.len());
-
-    for (disk_farm_index, disk_farm) in disk_farms.into_iter().enumerate() {
-        debug!(url = %node_rpc_url, %disk_farm_index, "Connecting to node RPC");
-        let node_client = NodeRpcClient::new(&node_rpc_url).await?;
-        let (plotting_delay_sender, plotting_delay_receiver) = oneshot::channel();
-        plotting_delay_senders.push(plotting_delay_sender);
-
-        let single_disk_farm_fut = SingleDiskFarm::new::<_, _, PosTable>(
-            SingleDiskFarmOptions {
-                directory: disk_farm.directory.clone(),
-                farmer_app_info: farmer_app_info.clone(),
-                allocated_space: disk_farm.allocated_plotting_space,
-                max_pieces_in_sector,
-                node_client,
-                reward_address,
-                kzg: kzg.clone(),
-                erasure_coding: erasure_coding.clone(),
-                piece_getter: piece_getter.clone(),
-                cache_percentage,
-                downloading_semaphore: Arc::clone(&downloading_semaphore),
-                encoding_semaphore: Arc::clone(&encoding_semaphore),
-                farm_during_initial_plotting,
-                farming_thread_pool_size,
-                plotting_thread_pool_size,
-                replotting_thread_pool_size,
-                plotting_delay: Some(plotting_delay_receiver),
-            },
-            disk_farm_index,
-        );
-
-        let single_disk_farm = match single_disk_farm_fut.await {
-            Ok(single_disk_farm) => single_disk_farm,
-            Err(SingleDiskFarmError::InsufficientAllocatedSpace {
-                min_space,
-                allocated_space,
-            }) => {
-                return Err(anyhow::anyhow!(
-                    "Allocated space {} ({}) is not enough, minimum is ~{} (~{}, {} bytes to be \
-                    exact)",
-                    bytesize::to_string(allocated_space, true),
-                    bytesize::to_string(allocated_space, false),
-                    bytesize::to_string(min_space, true),
-                    bytesize::to_string(min_space, false),
-                    min_space
-                ));
-            }
-            Err(error) => {
-                return Err(error.into());
-            }
-        };
-
-        if !no_info {
-            let info = single_disk_farm.info();
-            println!("Single disk farm {disk_farm_index}:");
-            println!("  ID: {}", info.id());
-            println!("  Genesis hash: 0x{}", hex::encode(info.genesis_hash()));
-            println!("  Public key: 0x{}", hex::encode(info.public_key()));
-            println!(
-                "  Allocated space: {} ({})",
-                bytesize::to_string(info.allocated_space(), true),
-                bytesize::to_string(info.allocated_space(), false)
-            );
-            println!("  Directory: {}", disk_farm.directory.display());
-        }
-
-        single_disk_farms.push(single_disk_farm);
-    }
-
-    let cache_acknowledgement_receiver = piece_cache
-        .replace_backing_caches(
-            single_disk_farms
-                .iter()
-                .map(|single_disk_farm| single_disk_farm.piece_cache())
-                .collect(),
-        )
-        .await;
+    let cache = DiskPieceCacheV2::new(first_farm_directory.join("pieces"))?;
+    let cache_acknowledgement_receiver = piece_cache.replace_backing_caches(cache).await;
     drop(piece_cache);
 
     // Wait for cache initialization before starting plotting
     tokio::spawn(async move {
         if cache_acknowledgement_receiver.await.is_ok() {
-            for plotting_delay_sender in plotting_delay_senders {
-                // Doesn't matter if receiver is gone
-                let _ = plotting_delay_sender.send(());
-            }
+            // do something
         }
     });
-
-    // Store piece readers so we can reference them later
-    let piece_readers = single_disk_farms
-        .iter()
-        .map(|single_disk_farm| single_disk_farm.piece_reader())
-        .collect::<Vec<_>>();
-
-    info!("Collecting already plotted pieces (this will take some time)...");
-
-    // Collect already plotted pieces
-    {
-        let mut future_readers_and_pieces = ReadersAndPieces::new(piece_readers);
-
-        for (disk_farm_index, single_disk_farm) in single_disk_farms.iter().enumerate() {
-            let disk_farm_index = disk_farm_index.try_into().map_err(|_error| {
-                anyhow!(
-                    "More than 256 plots are not supported, consider running multiple farmer \
-                    instances"
-                )
-            })?;
-
-            (0 as SectorIndex..)
-                .zip(single_disk_farm.plotted_sectors().await)
-                .for_each(
-                    |(sector_index, plotted_sector_result)| match plotted_sector_result {
-                        Ok(plotted_sector) => {
-                            future_readers_and_pieces.add_sector(disk_farm_index, &plotted_sector);
-                        }
-                        Err(error) => {
-                            error!(
-                                %error,
-                                %disk_farm_index,
-                                %sector_index,
-                                "Failed reading plotted sector on startup, skipping"
-                            );
-                        }
-                    },
-                );
-        }
-
-        readers_and_pieces.lock().replace(future_readers_and_pieces);
-    }
-
-    info!("Finished collecting already plotted pieces successfully");
-
-    let mut single_disk_farms_stream = single_disk_farms
-        .into_iter()
-        .enumerate()
-        .map(|(disk_farm_index, single_disk_farm)| {
-            let disk_farm_index = disk_farm_index.try_into().expect(
-                "More than 256 plots are not supported, this is checked above already; qed",
-            );
-            let readers_and_pieces = Arc::clone(&readers_and_pieces);
-            let span = info_span!("farm", %disk_farm_index);
-
-            // Collect newly plotted pieces
-            let on_plotted_sector_callback =
-                move |(plotted_sector, maybe_old_plotted_sector): &(
-                    PlottedSector,
-                    Option<PlottedSector>,
-                )| {
-                    let _span_guard = span.enter();
-
-                    {
-                        let mut readers_and_pieces = readers_and_pieces.lock();
-                        let readers_and_pieces = readers_and_pieces
-                            .as_mut()
-                            .expect("Initial value was populated above; qed");
-
-                        if let Some(old_plotted_sector) = maybe_old_plotted_sector {
-                            readers_and_pieces.delete_sector(disk_farm_index, old_plotted_sector);
-                        }
-                        readers_and_pieces.add_sector(disk_farm_index, plotted_sector);
-                    }
-                };
-
-            single_disk_farm
-                .on_sector_plotted(Arc::new(on_plotted_sector_callback))
-                .detach();
-
-            single_disk_farm.run()
-        })
-        .collect::<FuturesUnordered<_>>();
 
     // Drop original instance such that the only remaining instances are in `SingleDiskFarm`
     // event handlers
     drop(readers_and_pieces);
-
-    let farm_fut = pin!(run_future_in_dedicated_thread(
-        move || async move {
-            while let Some(result) = single_disk_farms_stream.next().await {
-                let id = result?;
-
-                info!(%id, "Farm exited successfully");
-            }
-            anyhow::Ok(())
-        },
-        "farmer-farm".to_string(),
-    )?);
 
     let networking_fut = pin!(run_future_in_dedicated_thread(
         move || async move { node_runner.run().await },
@@ -636,11 +428,6 @@ where
     futures::select!(
         // Signal future
         _ = signal.fuse() => {},
-
-        // Farm future
-        result = farm_fut.fuse() => {
-            result??;
-        },
 
         // Node runner future
         _ = networking_fut.fuse() => {

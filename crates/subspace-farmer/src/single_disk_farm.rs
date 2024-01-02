@@ -1,5 +1,6 @@
 pub mod farming;
 pub mod piece_cache;
+pub mod piece_cache_v2;
 pub mod piece_reader;
 mod plotting;
 

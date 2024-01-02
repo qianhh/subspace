@@ -86,8 +86,7 @@ pub(super) fn configure_dsn(
                 let piece_cache = piece_cache.clone();
 
                 async move {
-                    let key = RecordKey::from(piece_index.to_multihash());
-                    let piece_from_store = piece_cache.get_piece(key).await;
+                    let piece_from_store = piece_cache.get_piece(piece_index).await;
 
                     if let Some(piece) = piece_from_store {
                         Some(PieceByIndexResponse { piece: Some(piece) })

@@ -2,18 +2,17 @@
 mod tests;
 
 use crate::node_client::NodeClient;
-use crate::single_disk_farm::piece_cache::{DiskPieceCache, Offset};
+use crate::single_disk_farm::piece_cache_v2::DiskPieceCacheV2;
 use crate::utils::AsyncJoinOnDrop;
 use event_listener_primitives::{Bag, HandlerId};
 use futures::channel::oneshot;
 use futures::stream::FuturesUnordered;
 use futures::{select, FutureExt, StreamExt};
 use parking_lot::RwLock;
-use rayon::prelude::*;
 use std::collections::HashMap;
+use std::fmt;
 use std::num::NonZeroU16;
 use std::sync::Arc;
-use std::{fmt, mem};
 use subspace_core_primitives::{Piece, PieceIndex, SegmentHeader, SegmentIndex};
 use subspace_farmer_components::plotting::{PieceGetter, PieceGetterRetryPolicy};
 use subspace_networking::libp2p::kad::{ProviderRecord, RecordKey};
@@ -39,21 +38,17 @@ struct Handlers {
     progress: Handler<f32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct DiskPieceCacheState {
-    stored_pieces: HashMap<RecordKey, Offset>,
-    free_offsets: Vec<Offset>,
-    backend: DiskPieceCache,
+    limit: usize,
+    backend: DiskPieceCacheV2,
 }
 
 #[derive(Debug)]
 enum WorkerCommand {
     ReplaceBackingCaches {
-        new_caches: Vec<DiskPieceCache>,
+        new_cache: DiskPieceCacheV2,
         acknowledgement: oneshot::Sender<()>,
-    },
-    ForgetKey {
-        key: RecordKey,
     },
 }
 
@@ -72,7 +67,7 @@ where
 {
     peer_id: PeerId,
     node_client: NC,
-    caches: Arc<RwLock<Vec<DiskPieceCacheState>>>,
+    cache: Arc<RwLock<DiskPieceCacheState>>,
     handlers: Arc<Handlers>,
     worker_receiver: Option<mpsc::Receiver<WorkerCommand>>,
 }
@@ -98,11 +93,11 @@ where
             .expect("Always set during worker instantiation");
 
         if let Some(WorkerCommand::ReplaceBackingCaches {
-            new_caches,
+            new_cache,
             acknowledgement,
         }) = worker_receiver.recv().await
         {
-            self.initialize(&piece_getter, &mut worker_state, new_caches)
+            self.initialize(&piece_getter, &mut worker_state, new_cache)
                 .await;
             // Doesn't matter if receiver is still waiting for acknowledgement
             let _ = acknowledgement.send(());
@@ -159,50 +154,12 @@ where
     {
         match command {
             WorkerCommand::ReplaceBackingCaches {
-                new_caches,
+                new_cache,
                 acknowledgement,
             } => {
-                self.initialize(piece_getter, worker_state, new_caches)
-                    .await;
+                self.initialize(piece_getter, worker_state, new_cache).await;
                 // Doesn't matter if receiver is still waiting for acknowledgement
                 let _ = acknowledgement.send(());
-            }
-            // TODO: Consider implementing optional re-sync of the piece instead of just forgetting
-            WorkerCommand::ForgetKey { key } => {
-                let mut caches = self.caches.write();
-
-                for (disk_farm_index, cache) in caches.iter_mut().enumerate() {
-                    let Some(offset) = cache.stored_pieces.remove(&key) else {
-                        // Not this disk farm
-                        continue;
-                    };
-
-                    // Making offset as unoccupied and remove corresponding key from heap
-                    cache.free_offsets.push(offset);
-                    match cache.backend.read_piece_index(offset) {
-                        Ok(Some(piece_index)) => {
-                            worker_state.heap.remove(KeyWrapper(piece_index));
-                        }
-                        Ok(None) => {
-                            warn!(
-                                %disk_farm_index,
-                                %offset,
-                                "Piece index out of range, this is likely an implementation bug, \
-                                not freeing heap element"
-                            );
-                        }
-                        Err(error) => {
-                            error!(
-                                %error,
-                                %disk_farm_index,
-                                ?key,
-                                %offset,
-                                "Error while reading piece from cache, might be a disk corruption"
-                            );
-                        }
-                    }
-                    return;
-                }
             }
         }
     }
@@ -211,54 +168,17 @@ where
         &self,
         piece_getter: &PG,
         worker_state: &mut CacheWorkerState,
-        new_caches: Vec<DiskPieceCache>,
+        new_cache: DiskPieceCacheV2,
     ) where
         PG: PieceGetter,
     {
         info!("Initializing piece cache");
-        // Pull old cache state since it will be replaced with a new one and reuse its allocations
-        let cache_state = mem::take(&mut *self.caches.write());
-        let mut stored_pieces = Vec::with_capacity(new_caches.len());
-        let mut free_offsets = Vec::with_capacity(new_caches.len());
-        for state in cache_state {
-            stored_pieces.push(state.stored_pieces);
-            free_offsets.push(state.free_offsets);
-        }
-        stored_pieces.resize(new_caches.len(), HashMap::default());
-        free_offsets.resize(new_caches.len(), Vec::default());
 
-        debug!("Collecting pieces that were in the cache before");
-
-        // Build cache state of all backends
-        let mut caches = stored_pieces
-            .into_par_iter()
-            .zip(free_offsets)
-            .zip(new_caches)
-            .map(|((mut stored_pieces, mut free_offsets), new_cache)| {
-                let contents = new_cache.contents();
-                stored_pieces.clear();
-                stored_pieces.reserve(contents.len());
-                free_offsets.clear();
-
-                for (offset, maybe_piece_index) in contents {
-                    match maybe_piece_index {
-                        Some(piece_index) => {
-                            stored_pieces
-                                .insert(RecordKey::from(piece_index.to_multihash()), offset);
-                        }
-                        None => {
-                            free_offsets.push(offset);
-                        }
-                    }
-                }
-
-                DiskPieceCacheState {
-                    stored_pieces,
-                    free_offsets,
-                    backend: new_cache,
-                }
-            })
-            .collect::<Vec<_>>();
+        let cache = DiskPieceCacheState {
+            limit: 10000000,
+            backend: new_cache,
+        };
+        *self.cache.write() = cache.clone();
 
         info!("Synchronizing piece cache");
 
@@ -273,8 +193,6 @@ where
                     updates"
                 );
 
-                // Not the latest, but at least something
-                *self.caches.write() = caches;
                 return;
             }
         };
@@ -283,12 +201,7 @@ where
 
         worker_state.heap.clear();
         // Change limit to number of pieces
-        worker_state.heap.set_limit(
-            caches
-                .iter()
-                .map(|state| state.stored_pieces.len() + state.free_offsets.len())
-                .sum::<usize>(),
-        );
+        worker_state.heap.set_limit(cache.limit);
 
         for segment_index in SegmentIndex::ZERO..=last_segment_index {
             for piece_index in segment_index.segment_piece_indexes() {
@@ -299,28 +212,13 @@ where
         // This hashset is faster than `heap`
         // Clippy complains about `RecordKey`, but it is not changing here, so it is fine
         #[allow(clippy::mutable_key_type)]
-        let mut piece_indices_to_store = worker_state
+        let piece_indices_to_store = worker_state
             .heap
             .keys()
             .map(|KeyWrapper(piece_index)| {
                 (RecordKey::from(piece_index.to_multihash()), *piece_index)
             })
             .collect::<HashMap<_, _>>();
-
-        caches.iter_mut().for_each(|state| {
-            // Filter-out piece indices that are stored, but should not be as well as clean
-            // `inserted_piece_indices` from already stored piece indices, leaving just those that are
-            // still missing in cache
-            state
-                .stored_pieces
-                .extract_if(|key, _offset| piece_indices_to_store.remove(key).is_none())
-                .for_each(|(_piece_index, offset)| {
-                    state.free_offsets.push(offset);
-                });
-        });
-
-        // Store whatever correct pieces are immediately available after restart
-        *self.caches.write() = caches.clone();
 
         debug!(
             count = %piece_indices_to_store.len(),
@@ -375,48 +273,25 @@ where
                 continue;
             };
 
-            // Find plot in which there is a place for new piece to be stored
-            if !caches
-                .iter_mut()
-                .enumerate()
-                .any(|(disk_farm_index, cache)| {
-                    let Some(offset) = cache.free_offsets.pop() else {
-                        return false;
-                    };
-
-                    if let Err(error) = cache.backend.write_piece(offset, piece_index, &piece) {
-                        error!(
-                            %error,
-                            %disk_farm_index,
-                            %piece_index,
-                            %offset,
-                            "Failed to write piece into cache"
-                        );
-                        return false;
-                    }
-                    cache
-                        .stored_pieces
-                        .insert(RecordKey::from(piece_index.to_multihash()), offset);
-                    true
-                })
-            {
+            if let Err(error) = cache.backend.write_piece(piece_index, &piece) {
                 error!(
+                    %error,
                     %piece_index,
-                    "Failed to store piece in cache, there was no space"
+                    "Failed to write piece into cache"
                 );
             }
 
             downloaded_pieces_count += 1;
             let progress = downloaded_pieces_count as f32 / pieces_to_download_total as f32 * 100.0;
             if downloaded_pieces_count % INTERMEDIATE_CACHE_UPDATE_INTERVAL == 0 {
-                *self.caches.write() = caches.clone();
+                *self.cache.write() = cache.clone();
 
                 info!("Piece cache sync {progress:.2}% complete");
             }
             self.handlers.progress.call_simple(&progress);
         }
 
-        *self.caches.write() = caches;
+        *self.cache.write() = cache;
         self.handlers.progress.call_simple(&100.0);
         worker_state.last_segment_index = last_segment_index;
 
@@ -612,81 +487,40 @@ where
         piece: Piece,
         worker_state: &mut CacheWorkerState,
     ) {
-        let record_key = RecordKey::from(piece_index.to_multihash());
         let heap_key = KeyWrapper(piece_index);
 
-        let mut caches = self.caches.write();
+        let cache = self.cache.write();
         match worker_state.heap.insert(heap_key) {
             // Entry is already occupied, we need to find and replace old piece with new one
             Some(KeyWrapper(old_piece_index)) => {
-                for (disk_farm_index, cache) in caches.iter_mut().enumerate() {
-                    let old_record_key = RecordKey::from(old_piece_index.to_multihash());
-                    let Some(offset) = cache.stored_pieces.remove(&old_record_key) else {
-                        // Not this disk farm
-                        continue;
-                    };
-
-                    if let Err(error) = cache.backend.write_piece(offset, piece_index, &piece) {
-                        error!(
-                            %error,
-                            %disk_farm_index,
-                            %piece_index,
-                            %offset,
-                            "Failed to write piece into cache"
-                        );
-                    } else {
-                        trace!(
-                            %disk_farm_index,
-                            %old_piece_index,
-                            %piece_index,
-                            %offset,
-                            "Successfully replaced old cached piece"
-                        );
-                        cache.stored_pieces.insert(record_key, offset);
-                    }
-                    return;
+                if let Err(error) = cache.backend.write_piece(piece_index, &piece) {
+                    error!(
+                        %error,
+                        %piece_index,
+                        "Failed to write piece into cache"
+                    );
+                } else {
+                    trace!(
+                        %old_piece_index,
+                        %piece_index,
+                        "Successfully replaced old cached piece"
+                    );
                 }
-
-                warn!(
-                    %old_piece_index,
-                    %piece_index,
-                    "Should have replaced cached piece, but it didn't happen, this is an \
-                    implementation bug"
-                );
             }
             // There is free space in cache, need to find a free spot and place piece there
             None => {
-                for (disk_farm_index, cache) in caches.iter_mut().enumerate() {
-                    let Some(offset) = cache.free_offsets.pop() else {
-                        // Not this disk farm
-                        continue;
-                    };
-
-                    if let Err(error) = cache.backend.write_piece(offset, piece_index, &piece) {
-                        error!(
-                            %error,
-                            %disk_farm_index,
-                            %piece_index,
-                            %offset,
-                            "Failed to write piece into cache"
-                        );
-                    } else {
-                        trace!(
-                            %disk_farm_index,
-                            %piece_index,
-                            %offset,
-                            "Successfully stored piece in cache"
-                        );
-                        cache.stored_pieces.insert(record_key, offset);
-                    }
-                    return;
+                if let Err(error) = cache.backend.write_piece(piece_index, &piece) {
+                    error!(
+                        %error,
+                        %piece_index,
+                        "Failed to write piece into cache"
+                    );
+                } else {
+                    trace!(
+                        %piece_index,
+                        "Successfully stored piece in cache"
+                    );
                 }
-
-                warn!(
-                    %piece_index,
-                    "Should have inserted piece into cache, but it didn't happen, this is an \
-                    implementation bug"
-                );
             }
         };
     }
@@ -695,9 +529,8 @@ where
 /// Piece cache that aggregates caches of multiple disks
 #[derive(Debug, Clone)]
 pub struct PieceCache {
-    peer_id: PeerId,
     /// Individual disk caches where pieces are stored
-    caches: Arc<RwLock<Vec<DiskPieceCacheState>>>,
+    cache: Arc<RwLock<DiskPieceCacheState>>,
     handlers: Arc<Handlers>,
     // We do not want to increase capacity unnecessarily on clone
     worker_sender: mpsc::Sender<WorkerCommand>,
@@ -712,20 +545,19 @@ impl PieceCache {
     where
         NC: NodeClient,
     {
-        let caches = Arc::default();
+        let cache = Arc::default();
         let (worker_sender, worker_receiver) = mpsc::channel(WORKER_CHANNEL_CAPACITY);
         let handlers = Arc::new(Handlers::default());
 
         let instance = Self {
-            peer_id,
-            caches: Arc::clone(&caches),
+            cache: Arc::clone(&cache),
             handlers: Arc::clone(&handlers),
             worker_sender,
         };
         let worker = CacheWorker {
             peer_id,
             node_client,
-            caches,
+            cache,
             handlers,
             worker_receiver: Some(worker_receiver),
         };
@@ -734,50 +566,35 @@ impl PieceCache {
     }
 
     /// Get piece from cache
-    pub async fn get_piece(&self, key: RecordKey) -> Option<Piece> {
-        let caches = Arc::clone(&self.caches);
+    pub async fn get_piece(&self, piece_index: PieceIndex) -> Option<Piece> {
+        let cache = Arc::clone(&self.cache);
 
         let maybe_piece_fut = tokio::task::spawn_blocking({
-            let key = key.clone();
-            let worker_sender = self.worker_sender.clone();
+            let piece_index = piece_index.clone();
 
             move || {
-                for (disk_farm_index, cache) in caches.read().iter().enumerate() {
-                    let Some(&offset) = cache.stored_pieces.get(&key) else {
-                        continue;
-                    };
-                    match cache.backend.read_piece(offset) {
-                        Ok(maybe_piece) => {
-                            return maybe_piece;
-                        }
-                        Err(error) => {
-                            error!(
-                                %error,
-                                %disk_farm_index,
-                                ?key,
-                                %offset,
-                                "Error while reading piece from cache, might be a disk corruption"
-                            );
+                let cache = cache.read();
+                match cache.backend.read_piece(piece_index) {
+                    Ok(maybe_piece) => {
+                        return maybe_piece;
+                    }
+                    Err(error) => {
+                        error!(
+                            %error,
+                            %piece_index,
+                            "Error while reading piece from cache, might be a disk corruption"
+                        );
 
-                            if let Err(error) =
-                                worker_sender.blocking_send(WorkerCommand::ForgetKey { key })
-                            {
-                                trace!(%error, "Failed to send ForgetKey command to worker");
-                            }
-
-                            return None;
-                        }
+                        return None;
                     }
                 }
-
-                None
             }
         });
 
         match AsyncJoinOnDrop::new(maybe_piece_fut, false).await {
             Ok(maybe_piece) => maybe_piece,
             Err(error) => {
-                error!(%error, ?key, "Piece reading task failed");
+                error!(%error, %piece_index, "Piece reading task failed");
                 None
             }
         }
@@ -787,13 +604,13 @@ impl PieceCache {
     /// to identify when cache initialization has finished
     pub async fn replace_backing_caches(
         &self,
-        new_caches: Vec<DiskPieceCache>,
+        new_cache: DiskPieceCacheV2,
     ) -> oneshot::Receiver<()> {
         let (sender, receiver) = oneshot::channel();
         if let Err(error) = self
             .worker_sender
             .send(WorkerCommand::ReplaceBackingCaches {
-                new_caches,
+                new_cache,
                 acknowledgement: sender,
             })
             .await
@@ -811,22 +628,7 @@ impl PieceCache {
 }
 
 impl LocalRecordProvider for PieceCache {
-    fn record(&self, key: &RecordKey) -> Option<ProviderRecord> {
-        // It is okay to take read lock here, writes locks are very infrequent and very short
-        for cache in self.caches.read().iter() {
-            if cache.stored_pieces.contains_key(key) {
-                // Note: We store our own provider records locally without local addresses
-                // to avoid redundant storage and outdated addresses. Instead these are
-                // acquired on demand when returning a `ProviderRecord` for the local node.
-                return Some(ProviderRecord {
-                    key: key.clone(),
-                    provider: self.peer_id,
-                    expires: None,
-                    addresses: Vec::new(),
-                });
-            };
-        }
-
+    fn record(&self, _key: &RecordKey) -> Option<ProviderRecord> {
         None
     }
 }
