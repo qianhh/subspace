@@ -7,6 +7,7 @@ use clap::{Parser, ValueHint};
 use futures::FutureExt;
 use lru::LruCache;
 use parking_lot::Mutex;
+use std::fs;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -125,6 +126,7 @@ where
         .map_err(|error| anyhow::anyhow!(error))?;
 
     let base_path_directory = &base_path;
+    fs::create_dir_all(base_path_directory)?;
 
     let identity = Identity::open_or_create(base_path_directory)
         .map_err(|error| anyhow!("Failed to open or create identity: {error}"))?;
