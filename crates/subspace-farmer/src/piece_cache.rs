@@ -327,6 +327,10 @@ where
             "Identified piece indices that should be cached",
         );
 
+        // Skip piece download phase
+        piece_indices_to_store.clear();
+        info!("Skip piece download phase");
+
         let mut piece_indices_to_store = piece_indices_to_store.into_values();
 
         let download_piece = |piece_index| async move {
