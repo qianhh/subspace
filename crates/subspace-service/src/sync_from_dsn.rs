@@ -19,6 +19,7 @@ use sp_consensus_subspace::{FarmerPublicKey, SubspaceApi};
 use sp_runtime::traits::{CheckedSub, NumberFor};
 use sp_runtime::Saturating;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,6 +59,7 @@ pub(super) fn create_observer_and_worker<Block, AS, Client>(
     sync_target_block_number: Arc<AtomicU32>,
     sync_mode: Arc<Atomic<SyncMode>>,
     kzg: Kzg,
+    l2_cache_path: PathBuf,
 ) -> (
     impl Future<Output = ()> + Send + 'static,
     impl Future<Output = Result<(), sc_service::Error>> + Send + 'static,
@@ -91,6 +93,7 @@ where
             sync_mode,
             rx,
             &kzg,
+            &l2_cache_path,
         )
         .await
     };
@@ -222,6 +225,7 @@ async fn create_worker<Block, AS, IQS, Client>(
     sync_mode: Arc<Atomic<SyncMode>>,
     mut notifications: mpsc::Receiver<NotificationReason>,
     kzg: &Kzg,
+    l2_cache_path: &PathBuf,
 ) -> Result<(), sc_service::Error>
 where
     Block: BlockT,
@@ -257,6 +261,7 @@ where
             kzg,
             &segment_headers_store,
         )),
+        l2_cache_path.clone(),
     );
 
     // Node starts as offline, we'll wait for it to go online shrtly after

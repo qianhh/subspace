@@ -99,6 +99,7 @@ use static_assertions::const_assert;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_core_primitives::crypto::kzg::{embedded_kzg_settings, Kzg};
@@ -241,6 +242,8 @@ pub struct SubspaceConfiguration {
     pub is_timekeeper: bool,
     /// CPU cores that timekeeper can use
     pub timekeeper_cpu_cores: HashSet<usize>,
+    /// l2 piece cache path
+    pub l2_cache_path: PathBuf,
 }
 
 struct SubspaceExtensionsFactory<PosTable, Client, DomainBlock, ExecutorDispatch> {
@@ -876,6 +879,7 @@ where
             sync_target_block_number,
             sync_mode,
             subspace_link.kzg().clone(),
+            config.l2_cache_path,
         );
         task_manager
             .spawn_handle()
