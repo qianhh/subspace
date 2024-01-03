@@ -17,7 +17,7 @@ use std::{io, mem};
 use subspace_core_primitives::crypto::blake3_hash_list;
 use subspace_core_primitives::{Blake3Hash, Piece, PieceIndex};
 use thiserror::Error;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Defines initial duration between get_piece calls.
 const GET_PIECE_INITIAL_INTERVAL: Duration = Duration::from_secs(5);
@@ -164,6 +164,7 @@ where
             match self.read_piece_l2(piece_index) {
                 Ok(maybe_piece) => {
                     if maybe_piece.is_some() {
+                        info!(%piece_index, "Read piece from l2 local cache successfully");
                         return Ok(maybe_piece);
                     }
                 }
