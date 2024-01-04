@@ -12,7 +12,7 @@ use lru::LruCache;
 use parking_lot::Mutex;
 use std::fs;
 use std::net::SocketAddr;
-use std::num::{NonZeroU8, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::pin::pin;
 use std::str::FromStr;
@@ -78,8 +78,8 @@ pub(crate) struct FarmingArgs {
     #[arg(long, value_parser = parse_ss58_reward_address)]
     reward_address: PublicKey,
     /// Percentage of allocated space dedicated for caching purposes, 99% max
-    #[arg(long, default_value = "1", value_parser = cache_percentage_parser)]
-    cache_percentage: NonZeroU8,
+    #[arg(long, default_value = "0", value_parser = cache_percentage_parser)]
+    cache_percentage: u8,
     /// Sets some flags that are convenient during development, currently `--enable-private-ips`.
     #[arg(long)]
     dev: bool,
@@ -154,10 +154,10 @@ pub(crate) struct FarmingArgs {
     l2_cache_path: PathBuf,
 }
 
-fn cache_percentage_parser(s: &str) -> anyhow::Result<NonZeroU8> {
-    let cache_percentage = NonZeroU8::from_str(s)?;
+fn cache_percentage_parser(s: &str) -> anyhow::Result<u8> {
+    let cache_percentage = u8::from_str(s)?;
 
-    if cache_percentage.get() > 99 {
+    if cache_percentage > 99 {
         return Err(anyhow::anyhow!("Cache percentage can't exceed 99"));
     }
 

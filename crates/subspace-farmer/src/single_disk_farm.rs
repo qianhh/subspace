@@ -36,7 +36,6 @@ use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Seek, SeekFrom};
-use std::num::NonZeroU8;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -71,6 +70,8 @@ const_assert!(mem::size_of::<usize>() >= mem::size_of::<u64>());
 const RESERVED_PLOT_METADATA: u64 = 1024 * 1024;
 /// Reserve 1M of space for farm info (for potential future expansion)
 const RESERVED_FARM_INFO: u64 = 1024 * 1024;
+/// Reserve 100M of space for piece cache
+const MIN_PIECE_CACHE: u64 = 100 * 1024 * 1024;
 const NEW_SEGMENT_PROCESSING_DELAY: Duration = Duration::from_secs(30);
 
 /// An identifier for single disk farm, can be used for in logs, thread names, etc.
@@ -278,7 +279,7 @@ pub struct SingleDiskFarmOptions<NC, PG> {
     /// Erasure coding instance to use.
     pub erasure_coding: ErasureCoding,
     /// Percentage of allocated space dedicated for caching purposes
-    pub cache_percentage: NonZeroU8,
+    pub cache_percentage: u8,
     /// Semaphore for part of the plotting when farmer downloads new sector, allows to limit memory
     /// usage of the plotting process, permit will be held until the end of the plotting process
     pub downloading_semaphore: Arc<Semaphore>,
@@ -720,12 +721,13 @@ impl SingleDiskFarm {
         let fixed_space_usage = RESERVED_PLOT_METADATA
             + RESERVED_FARM_INFO
             + Identity::file_size() as u64
-            + KnownPeersManager::file_size(KNOWN_PEERS_CACHE_SIZE) as u64;
+            + KnownPeersManager::file_size(KNOWN_PEERS_CACHE_SIZE) as u64
+            + MIN_PIECE_CACHE;
         // Calculate how many sectors can fit
         let target_sector_count = {
             let potentially_plottable_space = allocated_space.saturating_sub(fixed_space_usage)
                 / 100
-                * (100 - u64::from(cache_percentage.get()));
+                * (100 - u64::from(cache_percentage));
             // Do the rounding to make sure we have exactly as much space as fits whole number of
             // sectors
             potentially_plottable_space / single_sector_overhead
@@ -733,7 +735,7 @@ impl SingleDiskFarm {
 
         if target_sector_count == 0 {
             let mut single_plot_with_cache_space =
-                single_sector_overhead.div_ceil(100 - u64::from(cache_percentage.get())) * 100;
+                single_sector_overhead.div_ceil(100 - u64::from(cache_percentage)) * 100;
             // Cache must not be empty, ensure it contains at least one element even if
             // percentage-wise it will use more space
             if single_plot_with_cache_space - single_sector_overhead
