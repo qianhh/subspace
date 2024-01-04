@@ -148,6 +148,10 @@ pub(crate) struct FarmingArgs {
     /// Threads will be pinned to corresponding CPU cores at creation.
     #[arg(long)]
     replotting_thread_pool_size: Option<NonZeroUsize>,
+
+    /// Specify l2 piece cache directory
+    #[arg(long)]
+    l2_cache_path: PathBuf,
 }
 
 fn cache_percentage_parser(s: &str) -> anyhow::Result<NonZeroU8> {
@@ -291,6 +295,7 @@ where
         farming_thread_pool_size,
         plotting_thread_pool_size,
         replotting_thread_pool_size,
+        l2_cache_path,
     } = farming_args;
 
     // Override flags with `--dev`
@@ -521,6 +526,7 @@ where
                 plotting_thread_pool_manager: plotting_thread_pool_manager.clone(),
                 replotting_thread_pool_manager: replotting_thread_pool_manager.clone(),
                 plotting_delay: Some(plotting_delay_receiver),
+                l2_cache_path: l2_cache_path.clone(),
             },
             disk_farm_index,
         );

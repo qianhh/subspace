@@ -327,6 +327,10 @@ where
             "Identified piece indices that should be cached",
         );
 
+        // Skip piece download phase
+        piece_indices_to_store.clear();
+        info!("Skip piece download phase");
+
         let mut piece_indices_to_store = piece_indices_to_store.into_values();
 
         let download_piece = |piece_index| async move {
@@ -778,6 +782,46 @@ impl PieceCache {
             Ok(maybe_piece) => maybe_piece,
             Err(error) => {
                 error!(%error, ?key, "Piece reading task failed");
+                None
+            }
+        }
+    }
+
+    /// Get piece from l2 cache
+    pub async fn get_piece_l2(&self, piece_index: PieceIndex) -> Option<Piece> {
+        let caches = Arc::clone(&self.caches);
+
+        let maybe_piece_fut = tokio::task::spawn_blocking({
+            move || {
+                for (disk_farm_index, cache) in caches.read().iter().enumerate() {
+                    match cache.backend.read_piece_l2(piece_index) {
+                        Ok(maybe_piece) => {
+                            if maybe_piece.is_some() {
+                                return maybe_piece;
+                            }
+                            continue;
+                        }
+                        Err(error) => {
+                            error!(
+                                %error,
+                                %disk_farm_index,
+                                %piece_index,
+                                "Error while reading piece from cache, might be a disk corruption"
+                            );
+
+                            return None;
+                        }
+                    }
+                }
+
+                None
+            }
+        });
+
+        match AsyncJoinOnDrop::new(maybe_piece_fut, false).await {
+            Ok(maybe_piece) => maybe_piece,
+            Err(error) => {
+                error!(%error, %piece_index, "Piece reading task failed");
                 None
             }
         }
