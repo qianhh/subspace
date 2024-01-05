@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     match command {
         Command::Farm(farming_args) => {
-            commands::farm::farm::<PosTable>(farming_args).await?;
+            commands::farm::farm(farming_args).await?;
         }
         Command::Benchmark(benchmark_args) => {
             commands::benchmark::benchmark(benchmark_args)?;

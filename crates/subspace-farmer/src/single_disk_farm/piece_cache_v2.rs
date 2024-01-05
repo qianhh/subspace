@@ -5,7 +5,7 @@ use subspace_core_primitives::crypto::blake3_hash_list;
 use subspace_core_primitives::{Blake3Hash, Piece, PieceIndex};
 use subspace_farmer_components::file_ext::{FileExt, OpenOptionsExt};
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 /// Disk piece cache open error
 #[derive(Debug, Error)]

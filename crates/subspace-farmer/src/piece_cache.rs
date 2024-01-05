@@ -228,6 +228,25 @@ where
         let mut piece_indices_to_store = piece_indices_to_store.into_values();
 
         let download_piece = |piece_index| async move {
+            {
+                trace!(%piece_index, "Checking piece");
+                let inner_cache = self.cache.read();
+                // check stored piece
+                match inner_cache.backend.read_piece(piece_index) {
+                    Ok(Some(_piece)) => {
+                        trace!(%piece_index, "Checked piece successfully");
+
+                        return None;
+                    }
+                    Ok(None) => {
+                        debug!(%piece_index, "Couldn't find piece in local cache");
+                    }
+                    Err(error) => {
+                        error!(%error, %piece_index, "Failed to get piece from local cache");
+                    }
+                }
+            }
+
             trace!(%piece_index, "Downloading piece");
 
             let result = piece_getter

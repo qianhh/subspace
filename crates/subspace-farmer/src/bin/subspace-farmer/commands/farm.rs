@@ -24,7 +24,6 @@ use subspace_metrics::{start_prometheus_metrics_server, RegistryAdapter};
 use subspace_networking::libp2p::identity::{ed25519, Keypair};
 use subspace_networking::libp2p::Multiaddr;
 use subspace_networking::utils::piece_provider::PieceProvider;
-use subspace_proof_of_space::Table;
 use tracing::info;
 use zeroize::Zeroizing;
 
@@ -96,9 +95,7 @@ struct DsnArgs {
 
 /// Start farming by using multiple replica plot in specified path and connecting to WebSocket
 /// server at specified address.
-pub(crate) async fn farm<PosTable>(farming_args: FarmingArgs) -> anyhow::Result<()>
-where
-    PosTable: Table,
+pub(crate) async fn farm(farming_args: FarmingArgs) -> anyhow::Result<()>
 {
     let signal = shutdown_signal();
 

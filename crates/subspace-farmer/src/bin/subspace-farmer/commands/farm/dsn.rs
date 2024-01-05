@@ -9,10 +9,8 @@ use subspace_farmer::piece_cache::PieceCache;
 use subspace_farmer::utils::readers_and_pieces::ReadersAndPieces;
 use subspace_farmer::{NodeClient, NodeRpcClient, KNOWN_PEERS_CACHE_SIZE};
 use subspace_networking::libp2p::identity::Keypair;
-use subspace_networking::libp2p::kad::RecordKey;
 use subspace_networking::libp2p::metrics::Metrics;
 use subspace_networking::libp2p::multiaddr::Protocol;
-use subspace_networking::utils::multihash::ToMultihash;
 use subspace_networking::utils::strip_peer_id;
 use subspace_networking::{
     construct, Config, KademliaMode, KnownPeersManager, KnownPeersManagerConfig, Node, NodeRunner,
