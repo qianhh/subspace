@@ -2,10 +2,14 @@ use crate::piece_cache::PieceCache;
 use crate::utils::readers_and_pieces::ReadersAndPieces;
 use crate::NodeClient;
 use async_trait::async_trait;
+use backoff::future::retry;
+use backoff::ExponentialBackoff;
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::error::Error;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use subspace_core_primitives::{Piece, PieceIndex};
 use subspace_farmer_components::plotting::{PieceGetter, PieceGetterRetryPolicy};
 use subspace_networking::libp2p::kad::RecordKey;
@@ -13,7 +17,12 @@ use subspace_networking::libp2p::PeerId;
 use subspace_networking::utils::multihash::ToMultihash;
 use subspace_networking::utils::piece_provider::{PieceProvider, PieceValidator, RetryPolicy};
 use subspace_networking::Node;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
+
+/// Defines initial duration between get_piece calls.
+const GET_PIECE_INITIAL_INTERVAL: Duration = Duration::from_secs(5);
+/// Defines max duration between get_piece calls.
+const GET_PIECE_MAX_INTERVAL: Duration = Duration::from_secs(40);
 
 pub struct FarmerPieceGetter<PV, NC> {
     node: Node,
@@ -21,6 +30,7 @@ pub struct FarmerPieceGetter<PV, NC> {
     piece_cache: PieceCache,
     node_client: NC,
     readers_and_pieces: Arc<Mutex<Option<ReadersAndPieces>>>,
+    disable_dsn_pull: bool,
 }
 
 impl<PV, NC> FarmerPieceGetter<PV, NC> {
@@ -30,6 +40,7 @@ impl<PV, NC> FarmerPieceGetter<PV, NC> {
         piece_cache: PieceCache,
         node_client: NC,
         readers_and_pieces: Arc<Mutex<Option<ReadersAndPieces>>>,
+        disable_dsn_pull: bool,
     ) -> Self {
         Self {
             node,
@@ -37,6 +48,7 @@ impl<PV, NC> FarmerPieceGetter<PV, NC> {
             piece_cache,
             node_client,
             readers_and_pieces,
+            disable_dsn_pull,
         }
     }
 
@@ -67,7 +79,34 @@ where
             return Ok(Some(piece));
         }
 
-        if let Some(piece) = self.piece_cache.get_piece_l2(piece_index).await {
+        if self.disable_dsn_pull {
+            let backoff = ExponentialBackoff {
+                initial_interval: GET_PIECE_INITIAL_INTERVAL,
+                max_interval: GET_PIECE_MAX_INTERVAL,
+                // Try until we get a valid piece
+                max_elapsed_time: None,
+                multiplier: 1.75,
+                ..ExponentialBackoff::default()
+            };
+
+            let retries = AtomicU64::default();
+
+            return retry(backoff, || async {
+                let current_attempt = retries.fetch_add(1, Ordering::Relaxed);
+
+                if let Some(piece) = self.piece_cache.get_piece_l2(piece_index).await {
+                    trace!(%piece_index, current_attempt, "Got piece from local l2 cache successfully");
+                    return Ok(Some(piece));
+                }
+
+                warn!(%piece_index, current_attempt, "Couldn't get a piece from local l2 cache. Retrying...");
+
+                Err(backoff::Error::transient(
+                    "Couldn't get piece from local l2 cache".into(),
+                ))
+            })
+            .await;
+        } else if let Some(piece) = self.piece_cache.get_piece_l2(piece_index).await {
             trace!(%piece_index, "Got piece from local l2 cache successfully");
             return Ok(Some(piece));
         }

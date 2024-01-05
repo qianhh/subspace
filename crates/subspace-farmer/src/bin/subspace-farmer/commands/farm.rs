@@ -152,6 +152,9 @@ pub(crate) struct FarmingArgs {
     /// Specify l2 piece cache directory
     #[arg(long)]
     l2_cache_path: PathBuf,
+    /// Disable pull piece from DSN, and block until we get a valid piece from local l2 cache
+    #[arg(long, default_value_t = false)]
+    disable_dsn_pull: bool,
 }
 
 fn cache_percentage_parser(s: &str) -> anyhow::Result<u8> {
@@ -296,6 +299,7 @@ where
         plotting_thread_pool_size,
         replotting_thread_pool_size,
         l2_cache_path,
+        disable_dsn_pull,
     } = farming_args;
 
     // Override flags with `--dev`
@@ -408,6 +412,7 @@ where
         piece_cache.clone(),
         node_client.clone(),
         Arc::clone(&readers_and_pieces),
+        disable_dsn_pull,
     ));
 
     let _piece_cache_worker = run_future_in_dedicated_thread(
