@@ -65,6 +65,8 @@ pub trait NodeClient: Clone + fmt::Debug + Send + Sync + 'static {
         &self,
         segment_index: SegmentIndex,
     ) -> Result<(), Error>;
+
+    async fn is_connected(&self) -> Result<bool, Error>;
 }
 
 /// Node Client extension methods that are not necessary for farmer as a library, but might be useful for an app

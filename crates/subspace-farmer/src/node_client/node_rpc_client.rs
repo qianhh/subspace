@@ -188,6 +188,10 @@ impl NodeClient for NodeRpcClient {
             )
             .await?)
     }
+
+    async fn is_connected(&self) -> Result<bool, Error> {
+        Ok(self.client.is_connected())
+    }
 }
 
 #[async_trait]

@@ -6,6 +6,7 @@ use crate::single_disk_farm::Handlers;
 use async_lock::RwLock;
 use futures::channel::mpsc;
 use futures::StreamExt;
+use jsonrpsee::core::Error as JsonError;
 use parking_lot::Mutex;
 use rayon::ThreadPoolBuildError;
 use std::io;
@@ -73,6 +74,14 @@ where
         if slot_info_forwarder_sender.try_send(slot_info).is_err() {
             debug!(%slot, "Slow farming, skipping slot");
         }
+    }
+
+    if let Ok(false) = node_client.is_connected().await {
+        return Err(FarmingError::FailedToSubscribeSlotInfo {
+            error: Box::new(JsonError::Custom(
+                "WebSocket connection closed; restart required".to_string(),
+            )),
+        });
     }
 
     Ok(())
