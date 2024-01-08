@@ -72,7 +72,7 @@ where
         // Error means farmer is still solving for previous slot, which is too late and
         // we need to skip this slot
         if slot_info_forwarder_sender.try_send(slot_info).is_err() {
-            debug!(%slot, "Slow farming, skipping slot");
+            warn!(%slot, "Slow farming, skipping slot");
         }
     }
 
@@ -295,11 +295,12 @@ where
                 debug!(%slot, %sector_index, "Solution found");
                 trace!(?solution, "Solution found");
 
-                if start.elapsed() >= farming_timeout {
+                let cost = start.elapsed();
+                if cost >= farming_timeout {
                     warn!(
                         %slot,
                         %sector_index,
-                        "Proving for solution skipped due to farming time limit",
+                        "Proving for solution skipped due to farming time limit, cost {:?}",cost,
                     );
                     break 'solutions_processing;
                 }
